@@ -10,16 +10,21 @@ void vcsJmpToRam3(uint16_t addr) {}
 void injectDmaData(int address, int count, const uint8_t* pBuffer) {}
 void vcsWrite6(uint16_t address, uint8_t data) {}
 
-
-#define BoardHeight 14
 #define BOARD_HEIGHT 14
-#define BOARD_WIDTH_SLIM 8
-#define BOARD_WIDTH_WIDE 17
+#define BOARD_WIDTH 17
 
 const int8_t Kernel78[] = { 0xA5, 0x28, 0x30, 0xFC, 0xA5, 0x28, 0x10, 0xFC, 0xA9, 0x40, 0x85, 0x3C, 0xA5, 0x28, 0x10, 0xFC, 0xAD, 0xAA, 0xFF, 0xC9, 0x25, 0xD0, 0x12, 0xAD, 0xAB, 0xFF, 0xC9, 0xCC, 0xD0, 0x0B, 0xAE, 0xAC, 0xFF, 0xAD, 0xAD, 0xFF, 0x95, 0x00, 0x4C, 0x50, 0x00, 0xA5, 0x28, 0x30, 0xFC, 0x4C, 0x4C, 0x00 };
 
 __attribute__((section(".noinit")))
 static uint8_t screenBufer[192*80];
+
+enum GameModeEnum
+{
+	solo,
+	vs,
+	co_op
+};
+
 
 const char* SelectionHeader[4] =
 {
@@ -28,51 +33,27 @@ const char* SelectionHeader[4] =
 	"                  ",
 	"  Select a game   "
 };
-const char* SelectionName[7] =
+const char* SelectionName[3] =
 {
-	"< Solo Mirrored > ",
-	"<   Solo Wide   > ",
-	"< VS. Separate  > ",
-	"<  VS. Shared   > ",
-	"<Co-op Push-Push> ",
-	"<Co-op Push-Pull> ",
-	"<  Co-op Super  > ",
+	"<     Solo      > ",
+	"<      VS.      > ",
+	"<     Co-op     > ",
 };
 const char* SelectionHelp[7 * 4] =
 {
-	"Play alone on a half width board.   ",
-	"The screen will be mirrored to show ",
-	"the game on both sides.             ",
-	"                                    ",
-
 	"Play alone on a full width board.   ",
 	"                                    ",
 	"                                    ",
 	"                                    ",
 
-	"Play on separate boards. See who can",
-	"keep their board clear the longest. ",
-	"The game will end once either board ",
-	"has been filled.                    ",
-
-	"Play on a single wide board. Once   ",
-	"the board has been filled, whoever  ",
+	"Play on a single board. Once the    ",
+	"board has been filled, whoever      ",
 	"has the highest score wins.         ",
 	"                                    ",
 
 	"Work together towards a shared high ",
-	"score. Both players will have the   ",
-	"push ability. Collect power-ups to  ",
-	"gain the pull ability temporarily.  ",
-
-	"Work together towards a shared high ",
-	"score. One player will have push,   ",
-	"and the other pull. Power-ups will  ",
-	"temporarily give the other ability. ",
-
-	"Work together towards a shared high ",
-	"score. Both players have the push   ",
-	"and pull abilities.                 ",
+	"score.                              ",
+	"                                    ",
 	"                                    ",
 };
 
@@ -112,26 +93,12 @@ const char Points[] =
 #define P0Color 0x4c
 #define P1Color 0x1e
 
-
-enum GameModeEnum
-{
-	solo_mirrored,
-	solo_full,
-	vs_sides,
-	vs_full,
-	co_op_push_push,
-	co_op_push_pull,
-	co_op_super,
-};
-
 typedef struct _GameModeState
 {
 	int is_7800;
 	int mode_enum;
 	int player_count;
-	int board_type; // 0 - Mirrored, 1 - Wide, 2 - Two Sides
 	int score_type; // 0 - Single, 1 - Double
-	int is_push_pull; // 0 - All players push, power-up adds pull 1 - P0 push, P1 pulls, power-up gives points
 	int match_size;
 } GameModeState;
 
@@ -149,8 +116,7 @@ typedef struct _Player
 	int block_color; // set to 0 when no block moved
 	int block_x; // Track the last block player moved
 	int block_y;
-	int can_pull;
-	int can_push;
+	int powered_up;
 	int is_pressing_button;
 	char score[16];
 } Player;
@@ -159,7 +125,7 @@ static int8_t sprite[11] = { 0x1c, 0x3e, 0x2a, 0x3e, 0x3e, 0x1c, 0x1c, 0x3e, 0x2
 static const int8_t title_screen_2600_colubk[16] = { 0x96, 0x96, 0x98, 0x98, 0x9a, 0x9a, 0x9c, 0x9c, 0x9c, 0x9c, 0x9a, 0x9a, 0x98, 0x98, 0x96, 0x96 };
 
 __attribute__((section(".noinit")))
-static int8_t blocks[BOARD_HEIGHT * BOARD_WIDTH_WIDE + 4]; // Must keep multiple of 4 for quick zeroing
+static int8_t blocks[BOARD_HEIGHT * BOARD_WIDTH + 4]; // Must keep multiple of 4 for quick zeroing
 
 void Init7800();
 void TitleScreen2600();
@@ -237,62 +203,23 @@ int elf_main(uint32_t* args)
 	game_mode_state.match_size = 3;
 	game_mode_state.mode_enum = SelectionScreen();
 
-	p0.can_pull = 0;
-	p0.can_push = 1;
-	p1.can_pull = 0;
-	p1.can_push = 1;
+	p0.powered_up = 0;
+	p1.powered_up = 0;
 
 	switch (game_mode_state.mode_enum) {
-	case solo_full:
-		game_mode_state.player_count = 1;
-		game_mode_state.board_type = 1;
-		game_mode_state.score_type = 0;
-		game_mode_state.is_push_pull = 0;
-		break;
-	case vs_sides:
-		game_mode_state.player_count = 2;
-		game_mode_state.board_type = 2;
-		game_mode_state.score_type = 1;
-		game_mode_state.is_push_pull = 0;
-		break;
-	case vs_full:
-		game_mode_state.player_count = 2;
-		game_mode_state.board_type = 1;
-		game_mode_state.score_type = 1;
-		game_mode_state.is_push_pull = 0;
-		break;
-	case co_op_push_push:
-		game_mode_state.player_count = 2;
-		game_mode_state.board_type = 1;
-		game_mode_state.score_type = 0;
-		game_mode_state.is_push_pull = 0;
-		break;
-	case co_op_push_pull:
-		p1.can_pull = 1;
-		p1.can_push = 0;
-		game_mode_state.player_count = 2;
-		game_mode_state.board_type = 1;
-		game_mode_state.score_type = 0;
-		game_mode_state.is_push_pull = 1;
-		break;
-	case co_op_super:
-		p0.can_pull = 1;
-		p1.can_pull = 1;
-		game_mode_state.player_count = 2;
-		game_mode_state.board_type = 1;
-		game_mode_state.score_type = 0;
-		game_mode_state.is_push_pull = 1;
-		break;
-	case solo_mirrored:
+	case solo:
 	default:
 		game_mode_state.player_count = 1;
-		game_mode_state.board_type = 0;
 		game_mode_state.score_type = 0;
-		game_mode_state.is_push_pull = 0;
+		break;
+	case vs:
+	case co_op:
+		game_mode_state.player_count = 2;
+		game_mode_state.score_type = 1;
 		break;
 	}
 
-	if (game_mode_state.score_type == 0)
+	if (game_mode_state.is_7800)
 	{
 		InitBoard7800();
 	}
@@ -307,19 +234,7 @@ int elf_main(uint32_t* args)
 		}
 		if ((tenthCount & 0xf) + frameCount  == 0)
 		{
-			if (game_mode_state.board_type == 0)
-			{
-				PlaceRandomBlock(blocks, BOARD_WIDTH_SLIM * BOARD_HEIGHT);
-			}
-			else if (game_mode_state.board_type == 1)
-			{
-				PlaceRandomBlock(blocks, BOARD_WIDTH_WIDE * BOARD_HEIGHT);
-			}
-			else if (game_mode_state.board_type == 2)
-			{
-				PlaceRandomBlock(blocks, BOARD_WIDTH_SLIM * BOARD_HEIGHT);
-				PlaceRandomBlock(&blocks[BOARD_WIDTH_SLIM * BOARD_HEIGHT], BOARD_WIDTH_SLIM * BOARD_HEIGHT);
-			}
+			PlaceRandomBlock(blocks, BOARD_WIDTH * BOARD_HEIGHT);
 		}
 		PrintSmall(0, 0, 16, p0.score);
 		if (game_mode_state.score_type == 0)
@@ -371,12 +286,7 @@ int elf_main(uint32_t* args)
 			vcsSta3(RESP0);
 
 			vcsSta3(WSYNC);
-			if (game_mode_state.board_type == 1) {
-				x = p1.x + 1;
-			}
-			else {
-				x = p1.x + 82;
-			}
+			x = p1.x + 1;
 			vcsNop2n(7);
 			while (x > -1)
 			{
@@ -421,16 +331,7 @@ int elf_main(uint32_t* args)
 
 			vcsNop2n((76 / 2) - 21);
 
-			if (game_mode_state.board_type == 2) {
-				DisplaySplitBoard(p0.y, p1.y, m0y, m1y, blocks, &blocks[BOARD_WIDTH_SLIM * BOARD_HEIGHT]);
-			}
-			else if (game_mode_state.board_type == 1) {
-				DisplayFullBoard(p0.y, p1.y, m0y, m1y);
-			}
-			else
-			{
-				DisplaySplitBoard(p0.y, p1.y, m0y, m1y, blocks, blocks);
-			}
+			DisplayFullBoard(p0.y, p1.y, m0y, m1y);
 
 			for (int i = 0; i < 5; i++)
 			{
@@ -457,40 +358,19 @@ int elf_main(uint32_t* args)
 		}
 
 		p0.block_color = p1.block_color = 0;
-		if (game_mode_state.board_type == 1) {
-			MovePlayer(&p0, joy0, blocks, BOARD_WIDTH_WIDE);
-			if (game_mode_state.player_count > 1) {
-				MovePlayer(&p1, joy0 << 4, blocks, BOARD_WIDTH_WIDE);
-			}
-			else {
-				MovePlayer(&p1, joy0, blocks, BOARD_WIDTH_WIDE);
-			}
+		MovePlayer(&p0, joy0, blocks, BOARD_WIDTH);
+		if (game_mode_state.player_count > 1) {
+			MovePlayer(&p1, joy0 << 4, blocks, BOARD_WIDTH);
 		}
 		else {
-			MovePlayer(&p0, joy0, blocks, BOARD_WIDTH_SLIM);
-			if (game_mode_state.player_count > 1) {
-				MovePlayer(&p1, joy0 << 4, &blocks[BOARD_WIDTH_SLIM * BOARD_HEIGHT], BOARD_WIDTH_SLIM);
-			}
-			else {
-				MovePlayer(&p1, joy0, blocks, BOARD_WIDTH_SLIM);
-			}
+			MovePlayer(&p1, joy0, blocks, BOARD_WIDTH);
 		}
 
 		int p0_total = 0;
 		int p1_total = 0;
-		if (game_mode_state.board_type == 2) {
-			p0_total = LookForMatches(&p0, blocks, BOARD_WIDTH_SLIM, game_mode_state.match_size);
-			p1_total = LookForMatches(&p1, &blocks[BOARD_WIDTH_SLIM * BOARD_HEIGHT], BOARD_WIDTH_SLIM, game_mode_state.match_size);
-		}
-		else if (game_mode_state.board_type == 1) {
-			p0_total = LookForMatches(&p0, blocks, BOARD_WIDTH_WIDE, game_mode_state.match_size);
-			if (game_mode_state.player_count > 1) {
-				p1_total = LookForMatches(&p1, blocks, BOARD_WIDTH_WIDE, game_mode_state.match_size);
-			}
-		}
-		else
-		{
-			p0_total = LookForMatches(&p0, blocks, BOARD_WIDTH_SLIM, game_mode_state.match_size);
+		p0_total = LookForMatches(&p0, blocks, BOARD_WIDTH, game_mode_state.match_size);
+		if (game_mode_state.player_count > 1) {
+			p1_total = LookForMatches(&p1, blocks, BOARD_WIDTH, game_mode_state.match_size);
 		}
 		AddPoints(p0.score, p0_total);
 		int highestScore = ScoreToInt(p0.score);
@@ -572,7 +452,7 @@ void DisplayFullBoard(int p0y, int p1y, int m0y, int m1y)
 	int p0si = 0;
 	int p1si = 0;
 
-	for (int i = 0; i < BoardHeight*12; i++)
+	for (int i = 0; i < BOARD_HEIGHT*12; i++)
 	{
 		// TODO AUDIO
 		vcsNop2n(2); // vcsPla4(); // vcsPla4Ex(0x10);
@@ -620,9 +500,9 @@ void DisplayFullBoard(int p0y, int p1y, int m0y, int m1y)
 		{
 			vcsStx3(ENAM1);
 		}
-		for (int j = 0; j < BOARD_WIDTH_WIDE; j++)
+		for (int j = 0; j < BOARD_WIDTH; j++)
 		{
-			switch (blocks[(blockY * BOARD_WIDTH_WIDE) + j])
+			switch (blocks[(blockY * BOARD_WIDTH) + j])
 			{
 			default:
 				vcsSax3(COLUPF);
@@ -639,105 +519,6 @@ void DisplayFullBoard(int p0y, int p1y, int m0y, int m1y)
 			}
 		}
 		//vcsPhp3();
-	}
-}
-
-
-void DisplaySplitBoard(int p0y, int p1y, int m0y, int m1y, int8_t* blocks0, int8_t* blocks1)
-{
-	// 168 visible lines
-	int blockY = 0;
-	int k = 0;
-	int m0height = 0;
-	int m1height = 0;
-	int p0si = 0;
-	int p1si = 0;
-
-	for (int i = 0; i < BoardHeight*12; i++)
-	{
-		if (k > 11)
-		{
-			k = 0;
-			blockY++;
-		}
-		k++;
-		// TODO AUDIO
-		vcsPla4();// vcsPla4Ex(0x10);
-		vcsSta3(AUDV0);
-		if (i >= p0y && p0si < 11)
-		{
-			vcsWrite5(GRP0, sprite[p0si++]);
-		}
-		else
-		{
-			vcsJmp3();
-			vcsNop2();
-		}
-		if (i >= p1y && p1si < 11)
-		{
-			vcsWrite5(GRP1, sprite[p1si++]);
-		}
-		else
-		{
-			vcsJmp3();
-			vcsNop2();
-		}
-		vcsLda2(TileColorA);
-		if (i >= m0y && m0height > 0)
-		{
-			vcsSta3(ENAM0);
-			m0height--;
-		}
-		else
-		{
-			vcsStx3(ENAM0);
-		}
-		if (i >= m1y && m1height > 0)
-		{
-			vcsSta3(ENAM1);
-			m1height--;
-		}
-		else
-		{
-			vcsStx3(ENAM1);
-		}
-		for (int j = 0; j < 8; j++)
-		{
-			switch (blocks0[(blockY << 3) | j])
-			{
-			default:
-				vcsSax3(COLUPF);
-				break;
-			case 1:
-				vcsSta3(COLUPF);
-				break;
-			case 2:
-				vcsStx3(COLUPF);
-				break;
-			case 3:
-				vcsSty3(COLUPF);
-				break;
-			}
-		}
-		vcsPhp3();
-		for (int j = 0; j < 8; j++)
-		{
-			switch (blocks1[(blockY << 3) | j])
-			{
-			default:
-				vcsSax3(COLUPF);
-				break;
-			case 1:
-				vcsSta3(COLUPF);
-				break;
-			case 2:
-				vcsStx3(COLUPF);
-				break;
-			case 3:
-				vcsSty3(COLUPF);
-				break;
-			}
-		}
 	}
 }
 
@@ -760,7 +541,7 @@ int LookForMatches(Player* player, int8_t* blocks0, int width, int min_length)
 		yt = y;
 	}
 	// Down
-	for (int y = player->block_y + 1; y < BoardHeight && (blocks0[y * width + player->block_x] == player->block_color); y++)
+	for (int y = player->block_y + 1; y < BOARD_HEIGHT && (blocks0[y * width + player->block_x] == player->block_color); y++)
 	{
 		total++;
 		yb = y;
@@ -797,7 +578,7 @@ int LookForMatches(Player* player, int8_t* blocks0, int width, int min_length)
 
 void PlaceRandomBlock(int8_t* blocks, int count)
 {
-	int width = game_mode_state.board_type == 1 ? BOARD_WIDTH_WIDE : BOARD_WIDTH_SLIM;
+	int width = BOARD_WIDTH;
 	for (int j = 0; j < (20-game_mode_state.match_size); j++)
 	{
 		int i = randint() % count;
@@ -832,8 +613,8 @@ void MovePlayer(Player* p, int joy, int8_t* blocks, int width)
 		// Up
 		if (blocks[((p->row - 1) * width) + p->col] == 0)
 		{
-			if (p->can_pull && p->is_pressing_button &&
-				p->row < BoardHeight-1 && blocks[((p->row + 1) * width) + p->col] != 0)
+			if (p->is_pressing_button &&
+				p->row < BOARD_HEIGHT-1 && blocks[((p->row + 1) * width) + p->col] != 0)
 			{
 				// Remember which block is moved for later
 				p->block_x = p->col;
@@ -846,7 +627,7 @@ void MovePlayer(Player* p, int joy, int8_t* blocks, int width)
 			p->y_vel = -1;
 			p->moves_remaining = 9;
 		}
-		else if (p->can_push && p->row > 1 && blocks[((p->row - 2) * width) + p->col] == 0)
+		else if (p->row > 1 && blocks[((p->row - 2) * width) + p->col] == 0)
 		{
 			// Remember which block is moved for later
 			p->block_x = p->col;
@@ -860,12 +641,12 @@ void MovePlayer(Player* p, int joy, int8_t* blocks, int width)
 			p->moves_remaining = 9;
 		}
 	}
-	else if (((joy & 0x20) == 0) && p->row < BoardHeight -1)
+	else if (((joy & 0x20) == 0) && p->row < BOARD_HEIGHT -1)
 	{
 		// Down
 		if (blocks[((p->row + 1) * width) + p->col] == 0)
 		{
-			if (p->can_pull && p->is_pressing_button &&
+			if (p->is_pressing_button &&
 				p->row > 0 && blocks[((p->row - 1) * width) + p->col] != 0)
 			{
 				// Remember which block is moved for later
@@ -879,7 +660,7 @@ void MovePlayer(Player* p, int joy, int8_t* blocks, int width)
 			p->y_vel = 1;
 			p->moves_remaining = 9;
 		}
-		else if (p->can_push && p->row < BoardHeight - 2 && blocks[((p->row + 2) * width) + p->col] == 0)
+		else if (p->row < BOARD_HEIGHT - 2 && blocks[((p->row + 2) * width) + p->col] == 0)
 		{
 			// Remember which block is moved for later
 			p->block_x = p->col;
@@ -898,7 +679,7 @@ void MovePlayer(Player* p, int joy, int8_t* blocks, int width)
 		// Left
 		if (blocks[(p->row * width) + (p->col - 1)] == 0)
 		{
-			if (p->can_pull && p->is_pressing_button &&
+			if( p->is_pressing_button &&
 				p->col < width - 1 && blocks[((p->row) * width) + p->col + 1] != 0)
 			{
 				// Remember which block is moved for later
@@ -912,7 +693,7 @@ void MovePlayer(Player* p, int joy, int8_t* blocks, int width)
 			p->x_vel = -1;
 			p->moves_remaining = 9;
 		}
-		else if (p->can_push && p->col > 1 && blocks[(p->row * width) + (p->col - 2)] == 0)
+		else if (p->col > 1 && blocks[(p->row * width) + (p->col - 2)] == 0)
 		{
 			// Remember which block is moved for later
 			p->block_x = p->col - 2;
@@ -931,7 +712,7 @@ void MovePlayer(Player* p, int joy, int8_t* blocks, int width)
 		// Right
 		if (blocks[(p->row * width) + (p->col + 1)] == 0)
 		{
-			if (p->can_pull && p->is_pressing_button &&
+			if (p->is_pressing_button &&
 				p->col > 0 && blocks[((p->row) * width) + p->col - 1] != 0)
 			{
 				// Remember which block is moved for later
@@ -945,7 +726,7 @@ void MovePlayer(Player* p, int joy, int8_t* blocks, int width)
 			p->x_vel = 1;
 			p->moves_remaining = 9;
 		}
-		else if (p->can_push && p->col < width - 2 && blocks[(p->row * width) + (p->col + 2)] == 0)
+		else if (p->col < width - 2 && blocks[(p->row * width) + (p->col + 2)] == 0)
 		{
 			// Remember which block is moved for later
 			p->block_x = p->col + 2;
@@ -1353,18 +1134,9 @@ void InitBoard7800()
 		}
 	}
 
-	int midl = 0;
-	int midr = 0;
-	if (game_mode_state.board_type != 1)
-	{
-		midl = 0x50500000;
-		midr = 0x00405050;
-	}
 	for (int y = 18*20; y < 186*20; y+=20)
 	{
 		buffer[y] = 0x00005050;
-		buffer[y + 9] = midl;
-		buffer[y + 10] = midr;
 		buffer[y + 19] = 0x50100000;
 	}
 }
